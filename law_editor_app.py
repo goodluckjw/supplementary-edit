@@ -8,6 +8,10 @@ def extract_article(text):
     match = re.search(r"(제\d+조(?:의\d+)?)", text)
     return match.group(1) if match else ""
 
+def extract_title(text):
+    match = re.search(r"제\d+조(?:의\d+)?\(([^)]+)\)", text)
+    return match.group(1) if match else None
+
 def extract_clause_number(text):
     match = re.search(r"([①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳])", text)
     circled_number_map = {
@@ -32,13 +36,16 @@ def format_clauses(clauses):
         return f"{formatted} 및 제{clauses[-1]}항"
 
 def number_to_circled(num):
-    base_code = 0x24EA  # ⓪
     if 1 <= num <= 50:
-        return chr(0x2460 + num - 1)  # ① ~ ㊿ (0x2460 ~ 0x2473)
+        return chr(0x2460 + num - 1)
     elif 51 <= num <= 100:
-        return chr(0x3251 + num - 51)  # ㉑(0x3251) ~ ㊿(0x32BF)
+        return chr(0x3251 + num - 51)
     else:
         return f"({num})"
+
+def split_multiple_clauses(text):
+    parts = re.split(r"(?=①|②|③|④|⑤|⑥|⑦|⑧|⑨|⑩|⑪|⑫|⑬|⑭|⑮|⑯|⑰|⑱|⑲|⑳)", text)
+    return [part.strip() for part in parts if part.strip()]
 
 def process_law_excel(uploaded_files, original_term, replacement_term):
     processed_rows = []
@@ -49,10 +56,11 @@ def process_law_excel(uploaded_files, original_term, replacement_term):
             if pd.notna(row['법령명']):
                 current_law_name = row['법령명']
             if isinstance(row['No.'], str) and row['No.'].startswith("제"):
-                processed_rows.append({
-                    '법령명': current_law_name,
-                    '조문': row['No.']
-                })
+                for clause_text in split_multiple_clauses(row['No.']):
+                    processed_rows.append({
+                        '법령명': current_law_name,
+                        '조문': clause_text
+                    })
 
     law_articles = pd.DataFrame(processed_rows)
     filtered = law_articles[law_articles['조문'].str.contains(original_term, na=False)]
@@ -60,9 +68,10 @@ def process_law_excel(uploaded_files, original_term, replacement_term):
     grouped = defaultdict(lambda: defaultdict(list))
     for _, row in filtered.iterrows():
         article = extract_article(row['조문'])
+        title = extract_title(row['조문'])
         clause_number = extract_clause_number(row['조문'])
         if article:
-            grouped[row['법령명']][article].append((clause_number, row['조문']))
+            grouped[row['법령명']][article].append((clause_number, title, row['조문']))
 
     output_lines = []
 
@@ -72,29 +81,42 @@ def process_law_excel(uploaded_files, original_term, replacement_term):
         for article in sorted(grouped[law_name].keys()):
             clauses = []
             match_samples = set()
-            for clause_num, text in grouped[law_name][article]:
-                if clause_num:
-                    clauses.append(clause_num)
-                matches = re.findall(rf"{original_term}(?=\(|\s|\.|,|$)?", text)
-                match_samples.update(matches)
+            title_present = False
+            for clause_num, title, text in grouped[law_name][article]:
+                matches = re.findall(rf"[가-힣]*{original_term}(?=\(|\s|\.|,|$)?", text)
+                if matches:
+                    match_samples.update(matches)
+                    if clause_num:
+                        clauses.append(clause_num)
+                    if title:
+                        title_present = True
 
             if not match_samples:
                 continue
 
-            clauses = sorted(set(clauses), key=lambda x: int(x))
-            clause_part = format_clauses(clauses) if clauses else article
+            clause_text = ""
+            clause_list = sorted(set(clauses), key=lambda x: int(x))
+            if title_present and clause_list:
+                clause_text = f"{article}의 제목 및 같은 조 {format_clauses(clause_list)}"
+            elif title_present:
+                clause_text = f"{article}의 제목"
+            elif clause_list:
+                clause_text = f"{article} {format_clauses(clause_list)}"
+            else:
+                clause_text = f"{article}"
 
             for match in sorted(match_samples):
                 modified = match.replace(original_term, replacement_term, 1)
                 particle = "을" if has_final_consonant(match) else "를"
-                count = sum(len(re.findall(rf"{re.escape(match)}(?=\(|\s|\.|,|$)?", text)) for _, text in grouped[law_name][article])
+                count = sum(len(re.findall(rf"{re.escape(match)}(?=\(|\s|\.|,|$)?", text)) for _, _, text in grouped[law_name][article])
                 each = "각각 " if count > 1 else ""
-                sentence = f'{law_name} {article} {clause_part} 중 "{match}"{particle} {each}"{modified}"으로 한다.'
+                sentence = f'{law_name} {clause_text} 중 "{match}"{particle} {each}"{modified}"으로 한다.'
                 output_lines.append(sentence)
 
         output_lines.append("")
 
-    return "\n".join(output_lines)
+    return "
+".join(output_lines)
 
 st.title("법률 조문 단어 치환기")
 
