@@ -3,6 +3,9 @@ import pandas as pd
 import re
 from collections import defaultdict
 import io
+import requests
+from bs4 import BeautifulSoup
+import time
 
 def extract_article(text):
     match = re.search(r"(제\d+조(?:의\d+)?)", text)
@@ -43,81 +46,61 @@ def number_to_circled(num):
     else:
         return f"({num})"
 
-def split_article_and_clauses(text):
-    article_match = re.search(r"^(제\d+조(?:의\d+)?(?:\([^)]*\))?)", text)
-    rest = text[len(article_match.group(0)):] if article_match else text
-    parts = re.split(r"(?=①|②|③|④|⑤|⑥|⑦|⑧|⑨|⑩|⑪|⑫|⑬|⑭|⑮|⑯|⑰|⑱|⑲|⑳)", rest)
-    results = [article_match.group(0).strip()] if article_match else []
-    results.extend([p.strip() for p in parts if p.strip()])
-    return results
+def fetch_law_names_from_url(url):
+    response = requests.get(url)
+    soup = BeautifulSoup(response.text, 'html.parser')
+    law_names = []
+    for td in soup.find_all('td', class_='tl'):
+        law_name = td.get_text(strip=True)
+        if law_name:
+            law_names.append(law_name)
+    return law_names
 
-def process_law_excel(uploaded_files, original_term, replacement_term):
-    processed_rows = []
-    for uploaded_file in uploaded_files:
-        df = pd.read_excel(uploaded_file, header=5)
-        current_law_name = None
-        for _, row in df.iterrows():
-            if pd.notna(row['법령명']):
-                current_law_name = row['법령명']
-            if isinstance(row['No.'], str) and row['No.'].startswith("제"):
-                for part in split_article_and_clauses(row['No.']):
-                    processed_rows.append({
-                        '법령명': current_law_name,
-                        '조문': part
-                    })
+def fetch_law_text_from_law_go_kr(law_name):
+    search_url = f"https://www.law.go.kr/LSW/eng/engLsSc.do?menuId=2&query={law_name}"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    response = requests.get(search_url, headers=headers)
+    soup = BeautifulSoup(response.text, 'html.parser')
+    law_text = ""
+    for div in soup.find_all("div", class_="law_text"):
+        law_text += div.get_text(separator="\n", strip=True)
+    return law_text if law_text else law_name + " 전문을 찾을 수 없습니다."
 
-    law_articles = pd.DataFrame(processed_rows)
-
-    grouped = defaultdict(lambda: defaultdict(list))
-    for _, row in law_articles.iterrows():
-        if original_term not in row['조문']:
-            continue
-        article = extract_article(row['조문'])
-        title = extract_title(row['조문'])
-        clause_number = extract_clause_number(row['조문'])
-        if article:
-            grouped[row['법령명']][article].append((clause_number, title, row['조문']))
-
+def process_web_laws(url, original_term, replacement_term):
+    law_names = fetch_law_names_from_url(url)
     output_lines = []
 
-    for idx, law_name in enumerate(sorted(grouped.keys()), 1):
+    for idx, law_name in enumerate(sorted(law_names), 1):
+        time.sleep(0.5)  # avoid hammering site
+        text = fetch_law_text_from_law_go_kr(law_name)
+        if original_term not in text:
+            continue
         circled = number_to_circled(idx)
-        output_lines.append(f"{circled} {law_name} 일부를 다음과 같이 개정한다.")
-        for article in sorted(grouped[law_name].keys()):
-            clauses = []
-            match_samples = set()
-            title_present = False
-            for clause_num, title, text in grouped[law_name][article]:
-                matches = re.findall(rf"[가-힣]*{original_term}(?=\(|\s|\.|,|$)?", text)
-                if matches:
-                    match_samples.update(matches)
-                    if clause_num:
-                        clauses.append(clause_num)
-                    if title and original_term in text:
-                        title_present = True
+        article = extract_article(text) or "제1조"
+        clause_number = extract_clause_number(text)
+        title = extract_title(text)
+        clauses = [clause_number] if clause_number else []
 
-            if not match_samples:
-                continue
+        clause_text = ""
+        if title and clauses:
+            clause_text = f"{article}의 제목 및 같은 조 {format_clauses(clauses)}"
+        elif title:
+            clause_text = f"{article}의 제목"
+        elif clauses:
+            clause_text = f"{article} {format_clauses(clauses)}"
+        else:
+            clause_text = f"{article}"
 
-            clause_list = sorted(set(clauses), key=lambda x: int(x))
-            if title_present and clause_list:
-                clause_text = f"{article}의 제목 및 같은 조 {format_clauses(clause_list)}"
-            elif title_present:
-                clause_text = f"{article}의 제목"
-            elif clause_list:
-                clause_text = f"{article} {format_clauses(clause_list)}"
-            else:
-                clause_text = f"{article}"
-
-            for match in sorted(match_samples):
-                modified = match.replace(original_term, replacement_term, 1)
-                particle = "을" if has_final_consonant(match) else "를"
-                count = sum(len(re.findall(rf"{re.escape(match)}(?=\(|\s|\.|,|$)?", text)) for _, _, text in grouped[law_name][article])
-                each = "각각 " if count > 1 else ""
-                sentence = f'{law_name} {clause_text} 중 "{match}"{particle} {each}"{modified}"으로 한다.'
-                output_lines.append(sentence)
-
-        output_lines.append("")
+        matches = re.findall(rf"[가-힣]*{original_term}(?=\(|\s|\.|,|$)?", text)
+        for match in sorted(set(matches)):
+            modified = match.replace(original_term, replacement_term, 1)
+            particle = "을" if has_final_consonant(match) else "를"
+            count = len(re.findall(re.escape(match), text))
+            each = "각각 " if count > 1 else ""
+            sentence = f'{law_name} {clause_text} 중 "{match}"{particle} {each}"{modified}"으로 한다.'
+            output_lines.append(f"{circled} {law_name} 일부를 다음과 같이 개정한다.")
+            output_lines.append(sentence)
+            output_lines.append("")
 
     return "\n".join(output_lines)
 
@@ -129,17 +112,17 @@ st.markdown("""
 **개선할 사항이나 오류가 있으면 사법법제과 김재우(4778)로 연락주세요.**
 
 **사용 방법:**
-1. 국회 입법정보시스템에서 다운로드한 엑셀 파일들을 업로드하세요.  
+1. 국회 입법정보센터의 법률 검색 URL을 입력하세요.  
 2. 바꾸고 싶은 단어와 새로 바꿀 단어를 입력하세요.  
 3. 텍스트 파일로 저장해서 내려받을 수 있어요.
 """)
 
-uploaded_files = st.file_uploader("엑셀 파일 업로드 (여러 개 가능)", type=["xlsx"], accept_multiple_files=True)
+url = st.text_input("법률 목록이 있는 URL 입력")
 original_term = st.text_input("찾을 단어 (예: 지방법원)")
 replacement_term = st.text_input("바꿀 단어 (예: 지역법원)")
 
-if uploaded_files and original_term and replacement_term:
-    result_text = process_law_excel(uploaded_files, original_term, replacement_term)
+if url and original_term and replacement_term:
+    result_text = process_web_laws(url, original_term, replacement_term)
 
     st.download_button(
         label="📥 결과 텍스트 파일 다운로드",
@@ -150,4 +133,4 @@ if uploaded_files and original_term and replacement_term:
 
     st.text_area("미리보기", result_text, height=400)
 else:
-    st.info("엑셀 파일과 바꿀 단어들을 입력해 주세요.")
+    st.info("법률 URL과 바꿀 단어들을 입력해 주세요.")
