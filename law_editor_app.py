@@ -99,7 +99,6 @@ def process_law_excel(uploaded_files, original_term, replacement_term):
             if not match_samples:
                 continue
 
-            clause_text = ""
             clause_list = sorted(set(clauses), key=lambda x: int(x))
             if title_present and clause_list:
                 clause_text = f"{article}의 제목 및 같은 조 {format_clauses(clause_list)}"
