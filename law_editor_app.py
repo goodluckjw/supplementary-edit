@@ -115,12 +115,15 @@ def process_law_excel(uploaded_files, original_term, replacement_term):
 
         output_lines.append("")
 
-    return "
-".join(output_lines)
+    return "\n".join(output_lines)
 
-st.title("법률 조문 단어 치환기")
+st.title("타법개정 도우미")
 
 st.markdown("""
+**용어 개정 후 부칙의 '다른 법률의 개정'을 간편하게 하기 위한 앱입니다.**
+
+**개선할 사항이나 오류가 있으면 사법법제과 김재우(4778)로 연락주세요.**
+
 **사용 방법:**
 1. 국회 입법정보시스템에서 다운로드한 엑셀 파일들을 업로드하세요.  
 2. 바꾸고 싶은 단어와 새로 바꿀 단어를 입력하세요.  
