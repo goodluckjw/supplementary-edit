@@ -32,10 +32,11 @@ def format_clauses(clauses):
         return f"{formatted} 및 제{clauses[-1]}항"
 
 def number_to_circled(num):
+    base_code = 0x24EA
     if 1 <= num <= 50:
-        return chr(0x2460 + num - 1)  # ① ~ ㊿
+        return chr(0x2460 + num - 1)
     elif 51 <= num <= 100:
-        return chr(0x3251 + num - 51)  # ㉑ ~ ㊿ (U+3251 ~ U+32BF)
+        return chr(0x3251 + num - 51)
     else:
         return f"({num})"
 
@@ -88,7 +89,7 @@ def process_law_excel(uploaded_files, original_term, replacement_term):
                 particle = "을" if has_final_consonant(match) else "를"
                 count = sum(text.count(match) for _, text in grouped[law_name][article])
                 each = "각각 " if count > 1 else ""
-                sentence = f"{law_name} {article} {clause_part} 중 "{match}"{particle} {each}"{modified}"으로 한다."
+                sentence = f'{law_name} {article} {clause_part} 중 "{match}"{particle} {each}"{modified}"으로 한다.'
                 output_lines.append(sentence)
 
         output_lines.append("")
